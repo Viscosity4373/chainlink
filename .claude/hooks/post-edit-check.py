@@ -158,6 +158,42 @@ def run_linter(file_path, max_errors=10):
                             if len(errors) >= max_errors:
                                 break
 
+        elif ext in ('.ex', '.exs'):
+            # Elixir: run mix format --check-formatted and mix credo --strict
+            project_root = find_project_root(file_path, ['mix.exs'])
+            if project_root:
+                # 1. Check format
+                try:
+                    fmt_result = subprocess.run(
+                        ['mix', 'format', '--check-formatted', file_path],
+                        cwd=project_root,
+                        capture_output=True,
+                        text=True,
+                        timeout=10
+                    )
+                    if fmt_result.returncode != 0:
+                        errors.append("File is not formatted (run 'mix format')")
+                except FileNotFoundError:
+                    pass
+
+                # 2. Run credo
+                try:
+                    credo_result = subprocess.run(
+                        ['mix', 'credo', '--strict', '--format=oneline', file_path],
+                        cwd=project_root,
+                        capture_output=True,
+                        text=True,
+                        timeout=20
+                    )
+                    if credo_result.stdout:
+                        for line in credo_result.stdout.split('\n'):
+                            if line.strip() and (':' in line):
+                                errors.append(line.strip()[:100])
+                                if len(errors) >= max_errors:
+                                    break
+                except FileNotFoundError:
+                    pass
+
     except subprocess.TimeoutExpired:
         errors.append("(linter timed out)")
     except (OSError, Exception) as e:
@@ -225,6 +261,15 @@ def find_test_files(file_path, project_root):
         test_patterns = [
             os.path.join(os.path.dirname(file_path), f'{name_without_ext}_test.go'),
         ]
+    elif ext in ('.ex', '.exs'):
+        # Elixir: test/my_app/context_test.exs
+        # Assuming standard structure: lib/my_app/foo.ex -> test/my_app/foo_test.exs
+        rel_path = os.path.relpath(file_path, project_root)
+        if rel_path.startswith('lib/'):
+            test_rel = rel_path.replace('lib/', 'test/').replace('.ex', '_test.exs').replace('.exs', '_test.exs')
+            test_patterns = [os.path.join(project_root, test_rel)]
+        else:
+            test_patterns = [os.path.join(project_root, 'test', '**', f'*{name_without_ext}*_test.exs')]
 
     found = []
     for pattern in test_patterns:
@@ -239,7 +284,7 @@ def get_test_reminder(file_path, project_root):
         return None  # Editing a test file, no reminder needed
 
     ext = os.path.splitext(file_path)[1]
-    code_extensions = ('.rs', '.py', '.js', '.ts', '.tsx', '.jsx', '.go')
+    code_extensions = ('.rs', '.py', '.js', '.ts', '.tsx', '.jsx', '.go', '.ex', '.exs')
 
     if ext not in code_extensions:
         return None
@@ -282,6 +327,8 @@ def get_test_reminder(file_path, project_root):
             test_cmd = 'npm test'
     elif ext == '.go' and project_root:
         test_cmd = 'go test ./...'
+    elif ext in ('.ex', '.exs') and project_root:
+        test_cmd = 'mix test --seed 0'
 
     if test_files or test_cmd:
         msg = "🧪 TEST REMINDER: Code modified since last test run."
@@ -311,7 +358,7 @@ def main():
     code_extensions = (
         '.rs', '.py', '.js', '.ts', '.tsx', '.jsx', '.go', '.java',
         '.c', '.cpp', '.h', '.hpp', '.cs', '.rb', '.php', '.swift',
-        '.kt', '.scala', '.zig', '.odin'
+        '.kt', '.scala', '.zig', '.odin', '.ex', '.exs'
     )
 
     if not any(file_path.endswith(ext) for ext in code_extensions):
@@ -323,7 +370,7 @@ def main():
     # Find project root for linter and test detection
     project_root = find_project_root(file_path, [
         'Cargo.toml', 'package.json', 'go.mod', 'setup.py',
-        'pyproject.toml', '.git'
+        'pyproject.toml', 'mix.exs', '.git'
     ])
 
     # Check for stubs
